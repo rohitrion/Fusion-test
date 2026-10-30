@@ -60,7 +60,7 @@ export function useSip() {
           attachMedia(session);
           break;
         case "Terminated":
-          resetCall();
+          if (sessionRef.current === session) resetCall();
           break;
       }
     });
@@ -83,6 +83,10 @@ export function useSip() {
         authorizationPassword: config.password,
         delegate: {
           onInvite: (invitation: Invitation) => {
+            if (sessionRef.current) {
+              invitation.reject({ statusCode: 486 }).catch(() => {}); // 486 = Busy Here
+              return;
+            }
             sessionRef.current = invitation;
             setIncomingFrom(invitation.remoteIdentity.uri.user ?? "Unknown");
             setCallState("RINGING");
@@ -149,9 +153,9 @@ export function useSip() {
     const session = sessionRef.current;
     if (!session) return;
     try {
-      if (callState === "IN_CALL") await session.bye();
-      else if (callState === "RINGING") await (session as Invitation).reject();
-      else if (callState === "CALLING") await (session as Inviter).cancel();
+      if (session.state === "Established") await session.bye();
+      else if ("reject" in session) await (session as Invitation).reject();
+      else if ("cancel" in session) await (session as Inviter).cancel();
     } catch (e) {
       console.error("Hangup error", e);
     }
