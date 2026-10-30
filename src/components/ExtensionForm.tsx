@@ -1,15 +1,23 @@
 "use client";
-
 import { useState } from "react";
 import { Button, TextField } from "@mui/material";
-
 import { Actions, Wrapper } from "./ExtensionForm.styles";
 import { useSip } from "./useSip";
+import CallPanel from "./CallPanel";
 
 export default function ExtensionForm() {
   const [extensionName, setExtensionName] = useState<string>("");
   const [password, setPassword] = useState<string>("");
-  const { status, connect, disconnect } = useSip();
+  const {
+    status,
+    connect,
+    disconnect,
+    callState,
+    incomingFrom,
+    call,
+    accept,
+    hangup,
+  } = useSip();
 
   const handleConnect = () => {
     connect({
@@ -59,6 +67,16 @@ export default function ExtensionForm() {
           Cancel
         </Button>
       </Actions>
+
+      {status === "CONNECTED" && (
+        <CallPanel
+          callState={callState}
+          incomingFrom={incomingFrom}
+          onCall={call}
+          onAccept={accept}
+          onHangup={hangup}
+        />
+      )}
     </Wrapper>
   );
 }

@@ -1,26 +1,108 @@
-'use client';
+"use client";
 
-import { useRef, useState } from 'react';
-import { ConnectStatus, SipConfig } from '@/components/types';
+import { useEffect, useRef, useState } from "react";
+import type {
+  Inviter,
+  Invitation,
+  Registerer,
+  Session,
+  SessionState,
+  UserAgent,
+} from "sip.js";
+import {
+  CallState,
+  ConnectStatus,
+  PeerConnectionHandler,
+  SipConfig,
+} from "@/components/types";
 
 export function useSip() {
-  const uaRef = useRef<import('sip.js').UserAgent | null>(null);
-  const registererRef = useRef<import('sip.js').Registerer | null>(null);
-  const [status, setStatus] = useState<ConnectStatus>('DISCONNECTED');
+  const uaRef = useRef<UserAgent | null>(null);
+  const registererRef = useRef<Registerer | null>(null);
+  const sessionRef = useRef<Session | null>(null);
+  const domainRef = useRef<string>("");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [status, setStatus] = useState<ConnectStatus>("DISCONNECTED");
+  const [callState, setCallState] = useState<CallState>("IDLE");
+  const [incomingFrom, setIncomingFrom] = useState<string>("");
+
+  useEffect(() => {
+    audioRef.current = new Audio();
+  }, []);
+
+  const resetCall = () => {
+    sessionRef.current = null;
+    setCallState("IDLE");
+    setIncomingFrom("");
+  };
+
+  const attachMedia = (session: Session) => {
+    const handler =
+      session.sessionDescriptionHandler as unknown as PeerConnectionHandler;
+    const pc = handler?.peerConnection;
+    const audio = audioRef.current;
+    if (!pc || !audio) return;
+
+    const remoteStream = new MediaStream();
+    pc.getReceivers().forEach((r) => {
+      if (r.track) remoteStream.addTrack(r.track);
+    });
+    audio.srcObject = remoteStream;
+    audio.play().catch((e) => console.warn("Autoplay blocked", e));
+  };
+
+  const attachSession = (session: Session) => {
+    session.stateChange.addListener((state: SessionState) => {
+      switch (state as string) {
+        case "Established":
+          setCallState("IN_CALL");
+          attachMedia(session);
+          break;
+        case "Terminated":
+          resetCall();
+          break;
+      }
+    });
+  };
 
   const connect = async (config: SipConfig) => {
+    if (uaRef.current) return;
     try {
-      setStatus('CONNECTING');
-      const { UserAgent, Registerer } = await import('sip.js');
+      setStatus("CONNECTING");
+      const { UserAgent, Registerer } = await import("sip.js");
+      domainRef.current = config.domain;
 
       const uri = UserAgent.makeURI(`sip:${config.username}@${config.domain}`);
-      if (!uri) throw new Error('Invalid SIP URI');
+      if (!uri) throw new Error("Invalid SIP URI");
 
       const ua = new UserAgent({
         uri,
         transportOptions: { server: `wss://${config.domain}:7443/ws` },
         authorizationUsername: config.username,
         authorizationPassword: config.password,
+        delegate: {
+          onInvite: (invitation: Invitation) => {
+            sessionRef.current = invitation;
+            setIncomingFrom(invitation.remoteIdentity.uri.user ?? "Unknown");
+            setCallState("RINGING");
+            attachSession(invitation);
+          },
+        },
+        sessionDescriptionHandlerFactoryOptions: {
+          peerConnectionOptions: {
+            rtcConfiguration: {
+              iceServers: [
+                { urls: "stun:stun.l.google.com:19302" },
+                {
+                  urls: "turn:usads.dentcomm.ai:3478",
+                  username: "fusionvoipuser",
+                  credential: "Qwsaqwsa123.*",
+                },
+              ],
+            },
+          },
+        },
       });
 
       await ua.start();
@@ -29,11 +111,51 @@ export function useSip() {
 
       uaRef.current = ua;
       registererRef.current = registerer;
-      setStatus('CONNECTED');
+      setStatus("CONNECTED");
     } catch (err) {
-      console.error('SIP connect failed', err);
-      setStatus('FAILED');
+      console.error("SIP connect failed", err);
+      setStatus("FAILED");
     }
+  };
+
+  const call = async (number: string) => {
+    if (!uaRef.current || sessionRef.current) return;
+    const { Inviter, UserAgent } = await import("sip.js");
+
+    const target = UserAgent.makeURI(`sip:${number}@${domainRef.current}`);
+    if (!target) return;
+
+    const inviter = new Inviter(uaRef.current, target, {
+      sessionDescriptionHandlerOptions: {
+        constraints: { audio: true, video: false },
+      },
+    });
+    sessionRef.current = inviter;
+    setCallState("CALLING");
+    attachSession(inviter);
+    await inviter.invite();
+  };
+
+  const accept = async () => {
+    const invitation = sessionRef.current as Invitation | null;
+    await invitation?.accept({
+      sessionDescriptionHandlerOptions: {
+        constraints: { audio: true, video: false },
+      },
+    });
+  };
+
+  const hangup = async () => {
+    const session = sessionRef.current;
+    if (!session) return;
+    try {
+      if (callState === "IN_CALL") await session.bye();
+      else if (callState === "RINGING") await (session as Invitation).reject();
+      else if (callState === "CALLING") await (session as Inviter).cancel();
+    } catch (e) {
+      console.error("Hangup error", e);
+    }
+    resetCall();
   };
 
   const disconnect = async () => {
@@ -41,8 +163,18 @@ export function useSip() {
     await uaRef.current?.stop().catch(() => {});
     uaRef.current = null;
     registererRef.current = null;
-    setStatus('DISCONNECTED');
+    resetCall();
+    setStatus("DISCONNECTED");
   };
 
-  return { status, connect, disconnect };
+  return {
+    status,
+    connect,
+    disconnect,
+    callState,
+    incomingFrom,
+    call,
+    accept,
+    hangup,
+  };
 }
