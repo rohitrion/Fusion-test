@@ -23,7 +23,7 @@ export default function ExtensionForm() {
     connect({
       username: extensionName,
       password: password,
-      domain: "usads.dentcomm.ai",
+      domain: process.env.NEXT_PUBLIC_SIP_DOMAIN ?? "",
     });
   };
 
